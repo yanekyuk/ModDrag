@@ -3,6 +3,31 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
+enum Log {
+    private static var isEnabled = false
+
+    static func configure(isEnabled: Bool) {
+        self.isEnabled = isEnabled
+    }
+
+    static func info(_ message: String) {
+        guard isEnabled else { return }
+        emit(message)
+    }
+
+    static func always(_ message: String) {
+        emit(message)
+    }
+
+    private static func emit(_ message: String) {
+        if message.hasSuffix("\n") {
+            fputs(message, stderr)
+        } else {
+            fputs(message + "\n", stderr)
+        }
+    }
+}
+
 // MARK: - Configuration
 
 struct HotKeyConfiguration {
@@ -99,10 +124,10 @@ class WindowDragger {
         // Start run loop
         let triggerDescription = hotKeyDescription(for: dragHotKey, action: "Move windows")
         let resizeDescription = hotKeyDescription(for: resizeHotKey, action: "Resize windows")
-        fputs("Window Dragger started.\n", stderr)
-        fputs("\(triggerDescription)\n", stderr)
-        fputs("\(resizeDescription)\n", stderr)
-        fputs("Press \(emergencyStopDescription()) to stop the current operation, Ctrl+C to quit.\n", stderr)
+        Log.always("Window Dragger started.")
+        Log.always(triggerDescription)
+        Log.always(resizeDescription)
+        Log.always("Press \(emergencyStopDescription()) to stop the current operation, Ctrl+C to quit.")
         
         CFRunLoopRun()
     }
@@ -110,13 +135,13 @@ class WindowDragger {
     private func checkAccessibilityPermissions() -> Bool {
         let trusted = AXIsProcessTrusted()
         if !trusted {
-            fputs("❌ Accessibility permission required!\n", stderr)
-            fputs("\n", stderr)
-            fputs("Please add this binary to System Settings → Privacy & Security → Accessibility:\n", stderr)
-            fputs("1. Run this binary once\n", stderr)
-            fputs("2. Open System Settings → Privacy & Security → Accessibility\n", stderr)
-            fputs("3. Add this binary to the list\n", stderr)
-            fputs("4. Restart this binary\n", stderr)
+            Log.always("❌ Accessibility permission required!")
+            Log.always("")
+            Log.always("Please add this binary to System Settings → Privacy & Security → Accessibility:")
+            Log.always("1. Run this binary once")
+            Log.always("2. Open System Settings → Privacy & Security → Accessibility")
+            Log.always("3. Add this binary to the list")
+            Log.always("4. Restart this binary")
         }
         return trusted
     }
@@ -199,7 +224,7 @@ class WindowDragger {
         )
         
         guard let eventTap = eventTap else {
-            fputs("❌ Failed to create event tap\n", stderr)
+            Log.always("❌ Failed to create event tap")
             exit(1)
         }
         
@@ -246,7 +271,7 @@ class WindowDragger {
         switch state {
         case .idle:
             state = .armed
-            fputs("🔧 Armed via trigger key\n", stderr)
+            Log.info("🔧 Armed via trigger key")
             
         case .armed, .dragging:
             stopDragging()
@@ -260,7 +285,7 @@ class WindowDragger {
         switch state {
         case .idle:
             state = .resizeArmed
-            fputs("📏 Resize armed via trigger key\n", stderr)
+            Log.info("📏 Resize armed via trigger key")
             
         case .resizeArmed, .resizing:
             stopResizing()
@@ -280,7 +305,7 @@ class WindowDragger {
             switch state {
             case .idle, .armed:
                 state = .resizeArmed
-                fputs("📏 Resize armed - move mouse over a window\n", stderr)
+                Log.info("📏 Resize armed - move mouse over a window")
             case .dragging:
                 // Let mouse movement handler take care of switching to resize
                 break
@@ -291,11 +316,11 @@ class WindowDragger {
             switch state {
             case .idle, .resizeArmed:
                 state = .armed
-                fputs("🔧 Armed - move mouse over a window\n", stderr)
+                Log.info("🔧 Armed - move mouse over a window")
             case .resizing:
                 stopResizing()
                 state = .armed
-                fputs("🔧 Armed - move mouse over a window\n", stderr)
+                Log.info("🔧 Armed - move mouse over a window")
             case .armed, .dragging:
                 break
             }
@@ -341,7 +366,7 @@ class WindowDragger {
                 startDragging(window: window, initialMouse: event.location)
             } else {
                 state = .armed
-                fputs("🔧 Armed - move mouse over a window\n", stderr)
+                Log.info("🔧 Armed - move mouse over a window")
             }
             return
         }
@@ -350,14 +375,14 @@ class WindowDragger {
         case .armed:
             if resizeActive {
                 state = .resizeArmed
-                fputs("📏 Resize armed - move mouse over a window\n", stderr)
+                Log.info("📏 Resize armed - move mouse over a window")
             } else if dragOnlyActive {
                 if let window = hitTestWindow(at: event.location) {
                     startDragging(window: window, initialMouse: event.location)
                 }
             } else {
                 state = .idle
-                fputs("💤 Idle\n", stderr)
+                Log.info("💤 Idle")
             }
 
         case .dragging:
@@ -383,10 +408,10 @@ class WindowDragger {
                 }
             } else if dragOnlyActive {
                 state = .armed
-                fputs("🔧 Armed - move mouse over a window\n", stderr)
+                Log.info("🔧 Armed - move mouse over a window")
             } else {
                 state = .idle
-                fputs("💤 Idle\n", stderr)
+                Log.info("💤 Idle")
             }
 
         case .resizing:
@@ -472,7 +497,7 @@ class WindowDragger {
         // Get window position and PID
         guard let windowOrigin = getWindowOrigin(window),
               let pid = getWindowPID(window) else {
-            fputs("❌ Failed to get window info\n", stderr)
+            Log.info("❌ Failed to get window info")
             return
         }
         
@@ -486,7 +511,7 @@ class WindowDragger {
         initialWindowOrigin = windowOrigin
         state = .dragging
         
-        fputs("🎯 Dragging window (PID: \(pid))\n", stderr)
+        Log.info("🎯 Dragging window (PID: \(pid))")
     }
     
     private func updateWindowPosition(currentMouse: CGPoint) {
@@ -506,18 +531,18 @@ class WindowDragger {
         
         // Update window position
         if !setWindowOrigin(window: window, origin: newOrigin) {
-            fputs("⚠️ Failed to move window, stopping drag\n", stderr)
+            Log.info("⚠️ Failed to move window, stopping drag")
             stopDragging()
         }
     }
-    
+
     private func stopDragging() {
         capturedWindow = nil
         capturedPID = 0
         initialMousePosition = .zero
         initialWindowOrigin = .zero
         state = .idle
-        fputs("💤 Idle\n", stderr)
+        Log.info("💤 Idle")
     }
     
     // MARK: - Resize Functions
@@ -526,7 +551,7 @@ class WindowDragger {
         // Get window size and PID
         guard let windowSize = getWindowSize(window),
               let pid = getWindowPID(window) else {
-            fputs("❌ Failed to get window info for resize\n", stderr)
+            Log.info("❌ Failed to get window info for resize")
             return
         }
         
@@ -540,7 +565,7 @@ class WindowDragger {
         initialWindowSize = windowSize
         state = .resizing
         
-        fputs("📏 Resizing window (PID: \(pid))\n", stderr)
+        Log.info("📏 Resizing window (PID: \(pid))")
     }
     
     private func updateWindowSize(currentMouse: CGPoint) {
@@ -560,20 +585,20 @@ class WindowDragger {
         
         // Update window size
         if !setWindowSize(window: window, size: newSize) {
-            fputs("⚠️ Failed to resize window, stopping resize\n", stderr)
+            Log.info("⚠️ Failed to resize window, stopping resize")
             stopResizing()
         }
     }
-    
+
     private func stopResizing() {
         capturedWindow = nil
         capturedPID = 0
         initialMousePosition = .zero
         initialWindowSize = .zero
         state = .idle
-        fputs("💤 Idle\n", stderr)
+        Log.info("💤 Idle")
     }
-    
+
     private func stopCurrentOperation() {
         switch state {
         case .dragging:
@@ -582,7 +607,7 @@ class WindowDragger {
             stopResizing()
         default:
             state = .idle
-            fputs("💤 Idle\n", stderr)
+            Log.info("💤 Idle")
         }
     }
     
@@ -651,11 +676,13 @@ class WindowDragger {
 @main
 struct Main {
     static func main() {
+        Log.configure(isEnabled: CommandLine.arguments.contains("--log"))
+
         let dragger = WindowDragger()
         
         // Handle Ctrl+C
         signal(SIGINT) { _ in
-            fputs("\n👋 Goodbye!\n", stderr)
+            Log.info("\n👋 Goodbye!")
             exit(0)
         }
         
