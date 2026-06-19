@@ -29,9 +29,14 @@ If the compiler reports that it cannot write the Swift module cache, re-run the 
 
 2. **Grant accessibility access** (first run only and if needed)
 
-    - Open **System Settings → Privacy & Security → Accessibility**
-    - Press the **"+"** button and add the compiled `mod-drag` binary
-    - Restart the binary after granting access
+    On first launch ModDrag asks macOS for Accessibility access and shows a dialog
+    with an **Open Accessibility Settings** button — no terminal required.
+
+    - Click **Open Accessibility Settings** (in the dialog or the menu-bar menu) to
+      jump straight to **System Settings → Privacy & Security → Accessibility**
+    - Enable **mod-drag** in the list
+    - ModDrag detects the grant and starts automatically within about a second —
+      no relaunch needed
 
 3. **Interact**
 
@@ -48,7 +53,13 @@ While ModDrag is running, a window icon appears in the macOS menu bar. Its prese
 -   **ModDrag — Running** — a status line confirming the tool is live
 -   **Quit ModDrag** (`⌘Q`) — cleanly stops the tool
 
-ModDrag runs as an accessory app, so it stays out of the Dock and the app switcher. You can still launch it from a terminal and quit with `Ctrl+C` as before.
+If accessibility access is missing, the icon shows a warning glyph and the menu
+adds an **Open Accessibility Settings…** entry; both disappear once access is
+granted and the tool starts.
+
+ModDrag runs as an accessory app, so it stays out of the Dock and the app switcher.
+It no longer needs a terminal — though you can still launch it from one and quit
+with `Ctrl+C`, and `--log` prints state transitions for debugging.
 
 ## Default Shortcuts
 
@@ -102,6 +113,6 @@ swiftc -O -parse-as-library main.swift -o mod-drag
 
 ## Troubleshooting
 
--   **The app exits immediately** – ensure the binary has accessibility permission. The tool prints detailed instructions when the permission is missing.
+-   **Nothing happens after launch** – check the menu bar. If the icon shows a warning, accessibility access is missing; use **Open Accessibility Settings…** from its menu and enable `mod-drag`. ModDrag starts automatically once access is granted.
 -   **A window does not move** – some system or sandboxed apps disallow programmatic movement; the tool skips those windows.
 -   **Logs show “Failed to move/resize window”** – the app probably rejected the accessibility command. Releasing and re-engaging the shortcut usually resets the state.

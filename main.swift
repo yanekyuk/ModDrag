@@ -28,6 +28,40 @@ enum Log {
     }
 }
 
+// MARK: - Accessibility Permission
+
+/// Thin wrapper over the Accessibility trust APIs. Keeps the permission
+/// vocabulary (check / prompt / open-settings) in one place so the AppDelegate
+/// can drive a fully graphical flow without depending on terminal output.
+enum AccessibilityPermission {
+    /// Whether this process is currently trusted for the Accessibility API.
+    static var isTrusted: Bool {
+        AXIsProcessTrusted()
+    }
+
+    /// Triggers the macOS "would like to control this computer" system prompt.
+    /// Returns the current trust state. Safe to call repeatedly; macOS shows the
+    /// prompt at most once per app until the user responds.
+    @discardableResult
+    static func prompt() -> Bool {
+        // Literal key value of kAXTrustedCheckOptionPrompt ("AXTrustedCheckOptionPrompt").
+        // Using the literal avoids the Unmanaged<CFString> vs CFString bridging
+        // differences of the imported constant across SDK versions.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
+    /// Opens System Settings directly on Privacy & Security → Accessibility.
+    static func openSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+}
+
 // MARK: - Configuration
 
 struct HotKeyConfiguration {
@@ -138,16 +172,9 @@ class WindowDragger {
     }
 
     private func checkAccessibilityPermissions() -> Bool {
-        let trusted = AXIsProcessTrusted()
+        let trusted = AccessibilityPermission.isTrusted
         if !trusted {
-            Log.always("❌ Accessibility permission required!")
-            Log.always("")
-            Log.always(
-                "Please add this binary to System Settings → Privacy & Security → Accessibility:")
-            Log.always("1. Run this binary once")
-            Log.always("2. Open System Settings → Privacy & Security → Accessibility")
-            Log.always("3. Add this binary to the list")
-            Log.always("4. Restart this binary")
+            Log.info("❌ Accessibility permission required (handled by the menu-bar UI).")
         }
         return trusted
     }
@@ -711,6 +738,8 @@ class WindowDragger {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private let dragger: WindowDragger
     private var statusItem: NSStatusItem?
+    private var permissionTimer: Timer?
+    private var draggerStarted = false
 
     init(dragger: WindowDragger) {
         self.dragger = dragger
@@ -720,31 +749,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
 
-        // Install the event tap on the AppKit main run loop.
-        guard dragger.start() else {
-            // Permission missing (instructions already printed). Surface a hint
-            // in the menu bar so the user knows why nothing is happening, then
-            // quit shortly after so the process does not linger uselessly.
-            statusItem?.button?.title = "⚠️"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                NSApplication.shared.terminate(nil)
-            }
-            return
+        if AccessibilityPermission.isTrusted {
+            startDragger()
+        } else {
+            enterPermissionNeededState()
         }
     }
 
+    // MARK: - Status Item
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = item
+        applyRunningAppearance()
+    }
+
+    /// Normal running look: window glyph + a minimal running menu.
+    private func applyRunningAppearance() {
+        guard let item = statusItem else { return }
 
         if let button = item.button {
-            // Prefer an SF Symbol; fall back to text on older systems.
             if let image = NSImage(
                 systemSymbolName: "macwindow.on.rectangle",
                 accessibilityDescription: "ModDrag")
             {
                 image.isTemplate = true
                 button.image = image
+                button.title = ""
             } else {
+                button.image = nil
                 button.title = "⬚"
             }
             button.toolTip = "ModDrag — running"
@@ -757,16 +790,138 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusLine)
 
         menu.addItem(.separator())
+        menu.addItem(makeQuitItem())
 
+        item.menu = menu
+    }
+
+    /// Permission-missing look: warning glyph + a menu that links to Settings.
+    private func applyPermissionNeededAppearance() {
+        guard let item = statusItem else { return }
+
+        if let button = item.button {
+            if let image = NSImage(
+                systemSymbolName: "exclamationmark.triangle",
+                accessibilityDescription: "ModDrag — accessibility access needed")
+            {
+                image.isTemplate = true
+                button.image = image
+                button.title = ""
+            } else {
+                button.image = nil
+                button.title = "⚠️"
+            }
+            button.toolTip = "ModDrag — accessibility access needed"
+        }
+
+        let menu = NSMenu()
+
+        let statusLine = NSMenuItem(
+            title: "ModDrag — Accessibility access needed", action: nil, keyEquivalent: "")
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
+
+        menu.addItem(.separator())
+
+        let settingsItem = NSMenuItem(
+            title: "Open Accessibility Settings…",
+            action: #selector(openAccessibilitySettings),
+            keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+        menu.addItem(makeQuitItem())
+
+        item.menu = menu
+    }
+
+    private func makeQuitItem() -> NSMenuItem {
         let quitItem = NSMenuItem(
             title: "Quit ModDrag",
             action: #selector(quit),
             keyEquivalent: "q")
         quitItem.target = self
-        menu.addItem(quitItem)
+        return quitItem
+    }
 
-        item.menu = menu
-        self.statusItem = item
+    // MARK: - Dragger lifecycle
+
+    /// Installs the event tap and swaps to the running appearance. Idempotent —
+    /// the polling timer may fire more than once before it is invalidated.
+    private func startDragger() {
+        guard !draggerStarted else { return }
+
+        guard dragger.start() else {
+            // Trusted check passed but the tap could not be installed; keep the
+            // menu available rather than dying silently.
+            statusItem?.button?.toolTip = "ModDrag — failed to start"
+            return
+        }
+
+        draggerStarted = true
+        applyRunningAppearance()
+    }
+
+    // MARK: - Permission flow
+
+    private func enterPermissionNeededState() {
+        applyPermissionNeededAppearance()
+
+        // Fire the macOS system prompt (D1).
+        AccessibilityPermission.prompt()
+
+        // Poll so we can auto-start the moment the user grants access (D2).
+        startPollingForPermission()
+
+        // Explain the situation with a direct path to the right Settings pane.
+        presentPermissionAlert()
+    }
+
+    private func startPollingForPermission() {
+        permissionTimer?.invalidate()
+
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard AccessibilityPermission.isTrusted else { return }
+            self.permissionTimer?.invalidate()
+            self.permissionTimer = nil
+            // If the permission alert is still on screen, dismiss its modal loop
+            // first so its now-stale "Quit" button can't terminate the running app.
+            if NSApp.modalWindow != nil {
+                NSApp.abortModal()
+            }
+            self.startDragger()
+        }
+        // .common so the timer keeps firing while the NSAlert modal loop runs.
+        RunLoop.main.add(timer, forMode: .common)
+        permissionTimer = timer
+    }
+
+    private func presentPermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "ModDrag needs Accessibility access"
+        alert.informativeText =
+            "To move and resize windows, enable ModDrag under System Settings → "
+            + "Privacy & Security → Accessibility. ModDrag starts automatically once access is granted."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open Accessibility Settings")
+        alert.addButton(withTitle: "Quit")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            AccessibilityPermission.openSettings()
+        case .alertSecondButtonReturn:
+            NSApplication.shared.terminate(nil)
+        default:
+            break
+        }
+    }
+
+    // MARK: - Actions
+
+    @objc private func openAccessibilitySettings() {
+        AccessibilityPermission.openSettings()
     }
 
     @objc private func quit() {
