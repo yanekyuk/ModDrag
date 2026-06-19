@@ -930,25 +930,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Main
-@main
-struct Main {
-    static func main() {
-        Log.configure(isEnabled: CommandLine.arguments.contains("--log"))
+//
+// Entry point as top-level code rather than `@main`. Compiling a single source
+// file with `swiftc` always uses script (top-level) mode, where `@main` is
+// rejected ("cannot be used in a module that contains top-level code"). Plain
+// top-level statements compile cleanly without needing `-parse-as-library`.
+func runModDrag() {
+    Log.configure(isEnabled: CommandLine.arguments.contains("--log"))
 
-        let dragger = WindowDragger()
+    let dragger = WindowDragger()
 
-        // Handle Ctrl+C (still works when launched from a terminal).
-        signal(SIGINT) { _ in
-            Log.info("\n👋 Goodbye!")
-            exit(0)
-        }
-
-        let app = NSApplication.shared
-        // Accessory app: live in the menu bar, no Dock icon, no main window.
-        app.setActivationPolicy(.accessory)
-
-        let delegate = AppDelegate(dragger: dragger)
-        app.delegate = delegate
-        app.run()
+    // Handle Ctrl+C (still works when launched from a terminal).
+    signal(SIGINT) { _ in
+        Log.info("\n👋 Goodbye!")
+        exit(0)
     }
+
+    let app = NSApplication.shared
+    // Accessory app: live in the menu bar, no Dock icon, no main window.
+    app.setActivationPolicy(.accessory)
+
+    let delegate = AppDelegate(dragger: dragger)
+    app.delegate = delegate
+    app.run()
 }
+
+runModDrag()

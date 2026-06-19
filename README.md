@@ -13,17 +13,50 @@ ModDrag is a lightweight Swift CLI that lets you move and resize macOS windows b
 
 ## Build
 
+### App bundle (recommended)
+
+Double-clicking a bare Unix executable in Finder forces macOS to run it inside
+Terminal. To get a true no-terminal launch, build the `.app` bundle:
+
 ```bash
-swiftc -O -parse-as-library main.swift -o mod-drag
+./build-app.sh
 ```
+
+This compiles `ModDrag.swift`, wraps the binary in `ModDrag.app` (with `LSUIElement`
+set so it runs as a menu-bar accessory), and ad-hoc code-signs it. Launch it with:
+
+```bash
+open ModDrag.app
+```
+
+or by double-clicking `ModDrag.app` in Finder. It appears in the menu bar with no
+Dock icon and no terminal window. Because the bundle has its own identity, macOS
+treats it as a distinct app for Accessibility — grant **ModDrag** access on first
+launch (see below).
+
+### Bare binary
+
+For terminal use (e.g. `--log` debugging) you can build just the executable:
+
+```bash
+swiftc -O ModDrag.swift -o mod-drag
+```
+
+No `-parse-as-library` flag is needed: the entry point is plain top-level code
+(`runModDrag()` at the bottom of `ModDrag.swift`) rather than `@main`. Compiling a
+single file with `swiftc` always uses script mode, which rejects `@main`
+("cannot be used in a module that contains top-level code") but accepts top-level
+statements.
 
 If the compiler reports that it cannot write the Swift module cache, re-run the command with sufficient permissions (the tool needs to write to `~/Library/Developer/Xcode/DerivedData` or `~/.cache/clang/ModuleCache`).
 
 ## Usage
 
-1. **Run the binary**
+1. **Launch ModDrag**
 
     ```bash
+    open ModDrag.app   # GUI launch, no terminal
+    # or, for terminal/debugging use:
     ./mod-drag
     ```
 
@@ -63,7 +96,7 @@ with `Ctrl+C`, and `--log` prints state transitions for debugging.
 
 ## Default Shortcuts
 
-The defaults live in `WindowDraggerConfiguration.default` inside `main.swift`:
+The defaults live in `WindowDraggerConfiguration.default` inside `ModDrag.swift`:
 
 ```swift
 static let `default` = WindowDraggerConfiguration(
@@ -105,10 +138,11 @@ You can add new codes to the `keyName(for:)` helper if you use additional keys a
 -   Change `minimumWindowSize` if you prefer a different lower bound when resizing.
 -   Modify `updateInterval` to raise or lower the refresh rate. Lower values increase CPU usage but make movement more responsive.
 
-Rebuild the binary after any changes:
+Rebuild after any changes:
 
 ```bash
-swiftc -O -parse-as-library main.swift -o mod-drag
+./build-app.sh                                   # app bundle
+swiftc -O ModDrag.swift -o mod-drag                  # bare binary
 ```
 
 ## Troubleshooting
