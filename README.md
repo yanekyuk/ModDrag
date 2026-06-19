@@ -48,11 +48,11 @@ The defaults live in `WindowDraggerConfiguration.default` inside `main.swift`:
 static let `default` = WindowDraggerConfiguration(
     dragHotKey: HotKeyConfiguration(
         keyCode: 0,
-        modifiers: [.maskCommand, .maskControl]
+        modifiers: [.maskControl]
     ),
     resizeHotKey: HotKeyConfiguration(
         keyCode: 0,
-        modifiers: [.maskShift, .maskCommand, .maskControl]
+        modifiers: [.maskControl, .maskAlternate]
     ),
     emergencyStopKeyCode: 53,
     minimumWindowSize: CGSize(width: 100, height: 100),

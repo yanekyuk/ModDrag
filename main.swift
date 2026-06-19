@@ -1,7 +1,7 @@
-import Foundation
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Foundation
 
 enum Log {
     private static var isEnabled = false
@@ -57,11 +57,11 @@ struct WindowDraggerConfiguration {
     static let `default` = WindowDraggerConfiguration(
         dragHotKey: HotKeyConfiguration(
             keyCode: 0,
-            modifiers: [.maskCommand, .maskControl]
+            modifiers: [.maskControl]
         ),
         resizeHotKey: HotKeyConfiguration(
             keyCode: 0,
-            modifiers: [.maskShift, .maskCommand, .maskControl]
+            modifiers: [.maskControl, .maskAlternate]
         ),
         emergencyStopKeyCode: 53,
         minimumWindowSize: CGSize(width: 100, height: 100),
@@ -90,16 +90,16 @@ class WindowDragger {
     private var state: DraggerState = .idle
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    
+
     // Drag state
     private var initialMousePosition: CGPoint = .zero
     private var initialWindowOrigin: CGPoint = .zero
     private var capturedWindow: AXUIElement?
     private var capturedPID: pid_t = 0
-    
+
     // Resize state
     private var initialWindowSize: CGSize = .zero
-    
+
     // Rate limiting
     private var lastUpdateTime: CFTimeInterval = 0
 
@@ -111,33 +111,35 @@ class WindowDragger {
         self.minimumWindowSize = configuration.minimumWindowSize
         self.updateInterval = configuration.updateInterval
     }
-    
+
     func start() {
         // Check accessibility permissions
         guard checkAccessibilityPermissions() else {
             exit(1)
         }
-        
+
         // Create event tap
         setupEventTap()
-        
+
         // Start run loop
         let triggerDescription = hotKeyDescription(for: dragHotKey, action: "Move windows")
         let resizeDescription = hotKeyDescription(for: resizeHotKey, action: "Resize windows")
         Log.always("Window Dragger started.")
         Log.always(triggerDescription)
         Log.always(resizeDescription)
-        Log.always("Press \(emergencyStopDescription()) to stop the current operation, Ctrl+C to quit.")
-        
+        Log.always(
+            "Press \(emergencyStopDescription()) to stop the current operation, Ctrl+C to quit.")
+
         CFRunLoopRun()
     }
-    
+
     private func checkAccessibilityPermissions() -> Bool {
         let trusted = AXIsProcessTrusted()
         if !trusted {
             Log.always("❌ Accessibility permission required!")
             Log.always("")
-            Log.always("Please add this binary to System Settings → Privacy & Security → Accessibility:")
+            Log.always(
+                "Please add this binary to System Settings → Privacy & Security → Accessibility:")
             Log.always("1. Run this binary once")
             Log.always("2. Open System Settings → Privacy & Security → Accessibility")
             Log.always("3. Add this binary to the list")
@@ -145,7 +147,7 @@ class WindowDragger {
         }
         return trusted
     }
-    
+
     private func hotKeyDescription(for hotKey: HotKeyConfiguration, action: String) -> String {
         let modifierNames = modifierDescription(for: hotKey.modifiers)
 
@@ -185,10 +187,10 @@ class WindowDragger {
         default: return "Key(\(keyCode))"
         }
     }
-    
+
     private func modifierDescription(for modifiers: CGEventFlags) -> String {
         var parts: [String] = []
-        
+
         if modifiers.contains(.maskCommand) {
             parts.append("Cmd")
         }
@@ -201,20 +203,19 @@ class WindowDragger {
         if modifiers.contains(.maskShift) {
             parts.append("Shift")
         }
-        
+
         return parts.joined(separator: "+")
     }
-    
+
     private func setupEventTap() {
-        let eventMask = (1 << CGEventType.mouseMoved.rawValue) | 
-                       (1 << CGEventType.flagsChanged.rawValue) |
-                       (1 << CGEventType.leftMouseDragged.rawValue) |
-                       (1 << CGEventType.keyDown.rawValue)
-        
+        let eventMask =
+            (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.leftMouseDragged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+
         eventTap = CGEvent.tapCreate(
-            tap: CGEventTapLocation(rawValue: 0)!, // kCGHIDEventTap
-            place: CGEventTapPlacement(rawValue: 0)!, // kCGHeadInsertEventTap
-            options: CGEventTapOptions(rawValue: 0)!, // kCGEventTapOptionDefault
+            tap: CGEventTapLocation(rawValue: 0)!,  // kCGHIDEventTap
+            place: CGEventTapPlacement(rawValue: 0)!,  // kCGHeadInsertEventTap
+            options: CGEventTapOptions(rawValue: 0)!,  // kCGEventTapOptionDefault
             eventsOfInterest: CGEventMask(eventMask),
             callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
                 let dragger = Unmanaged<WindowDragger>.fromOpaque(refcon!).takeUnretainedValue()
@@ -222,17 +223,19 @@ class WindowDragger {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         )
-        
+
         guard let eventTap = eventTap else {
             Log.always("❌ Failed to create event tap")
             exit(1)
         }
-        
+
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .defaultMode)
     }
-    
-    private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+
+    private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent)
+        -> Unmanaged<CGEvent>?
+    {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap {
                 Log.info("⚠️ Event tap disabled, re-enabling")
@@ -271,38 +274,38 @@ class WindowDragger {
             handleMouseMoved(event: event)
             return Unmanaged.passUnretained(event)
         }
-        
+
         return Unmanaged.passUnretained(event)
     }
-    
+
     private func handleTriggerKeyPressed() {
         switch state {
         case .idle:
             state = .armed
             Log.info("🔧 Armed via trigger key")
-            
+
         case .armed, .dragging:
             stopDragging()
-            
+
         case .resizeArmed, .resizing:
             stopResizing()
         }
     }
-    
+
     private func handleResizeKeyPressed() {
         switch state {
         case .idle:
             state = .resizeArmed
             Log.info("📏 Resize armed via trigger key")
-            
+
         case .resizeArmed, .resizing:
             stopResizing()
-            
+
         case .armed, .dragging:
             stopDragging()
         }
     }
-    
+
     private func handleFlagsChanged(event: CGEvent) {
         let flags = event.flags
         let resizeShortcutActive = !resizeHotKey.usesKeyCode && resizeModifiersActive(flags: flags)
@@ -344,28 +347,30 @@ class WindowDragger {
             }
         }
     }
-    
+
     private func handleMouseMoved(event: CGEvent) {
         let flags = event.flags
         let resizeStateActive = state == .resizeArmed || state == .resizing
         let dragStateActive = state == .armed || state == .dragging
 
-        let resizeActive = resizeHotKey.usesKeyCode
+        let resizeActive =
+            resizeHotKey.usesKeyCode
             ? (resizeStateActive && resizeModifiersActive(flags: flags))
             : resizeModifiersActive(flags: flags)
 
-        let dragActive = dragHotKey.usesKeyCode
+        let dragActive =
+            dragHotKey.usesKeyCode
             ? (dragStateActive && dragModifiersActive(flags: flags))
             : dragModifiersActive(flags: flags)
         let dragOnlyActive = dragActive && !resizeActive
-        
+
         // Rate limiting
         let currentTime = CFAbsoluteTimeGetCurrent()
         if currentTime - lastUpdateTime < updateInterval {
             return
         }
         lastUpdateTime = currentTime
-        
+
         // Dynamic switch with priority for dragging
         if dragOnlyActive && (state == .resizing || state == .resizeArmed) {
             // Switch from resizing to dragging
@@ -428,12 +433,12 @@ class WindowDragger {
             } else {
                 stopResizing()
             }
-            
+
         case .idle:
             break
         }
     }
-    
+
     private func dragModifiersActive(flags: CGEventFlags) -> Bool {
         return dragHotKey.matchesModifiers(flags)
     }
@@ -441,24 +446,25 @@ class WindowDragger {
     private func resizeModifiersActive(flags: CGEventFlags) -> Bool {
         return resizeHotKey.matchesModifiers(flags)
     }
-    
+
     private func hitTestWindow(at location: CGPoint) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
-        
+
         var element: AXUIElement?
-        let result = AXUIElementCopyElementAtPosition(systemWide, Float(location.x), Float(location.y), &element)
-        
+        let result = AXUIElementCopyElementAtPosition(
+            systemWide, Float(location.x), Float(location.y), &element)
+
         guard result == .success, let uiElement = element else {
             return nil
         }
-        
+
         // Walk up to find window
         var currentElement = uiElement
-        
+
         while true {
             var role: CFTypeRef?
             AXUIElementCopyAttributeValue(currentElement, kAXRoleAttribute as CFString, &role)
-            
+
             if let roleString = role as? String, roleString == kAXWindowRole {
                 // Check if window is movable
                 if isWindowMovable(currentElement) {
@@ -466,77 +472,83 @@ class WindowDragger {
                 }
                 break
             }
-            
+
             var parent: CFTypeRef?
-            if AXUIElementCopyAttributeValue(currentElement, kAXParentAttribute as CFString, &parent) == .success,
-               let parentElement = parent {
+            if AXUIElementCopyAttributeValue(
+                currentElement, kAXParentAttribute as CFString, &parent) == .success,
+                let parentElement = parent
+            {
                 currentElement = parentElement as! AXUIElement
             } else {
                 break
             }
         }
-        
+
         return nil
     }
-    
+
     private func isWindowMovable(_ window: AXUIElement) -> Bool {
         // Check if window has position attribute (movable)
         var position: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &position)
-        
+        let result = AXUIElementCopyAttributeValue(
+            window, kAXPositionAttribute as CFString, &position)
+
         guard result == .success else {
             return false
         }
-        
+
         // Check if window is not minimized
         var minimized: CFTypeRef?
-        if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized) == .success,
-           let isMinimized = minimized as? Bool, isMinimized {
+        if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
+            == .success,
+            let isMinimized = minimized as? Bool, isMinimized
+        {
             return false
         }
-        
+
         // Note: kAXFullscreenAttribute may not be available in all macOS versions
         // Skip fullscreen check for compatibility
-        
+
         return true
     }
-    
+
     private func startDragging(window: AXUIElement, initialMouse: CGPoint) {
         // Get window position and PID
         guard let windowOrigin = getWindowOrigin(window),
-              let pid = getWindowPID(window) else {
+            let pid = getWindowPID(window)
+        else {
             Log.info("❌ Failed to get window info")
             return
         }
-        
+
         // Activate the application
         activateApp(pid: pid)
-        
+
         // Store drag state
         capturedWindow = window
         capturedPID = pid
         initialMousePosition = initialMouse
         initialWindowOrigin = windowOrigin
         state = .dragging
-        
+
         Log.info("🎯 Dragging window (PID: \(pid))")
     }
-    
+
     private func updateWindowPosition(currentMouse: CGPoint) {
         guard let window = capturedWindow else {
             stopDragging()
             return
         }
-        
+
         // Calculate delta and new position
         let deltaX = currentMouse.x - initialMousePosition.x
         let deltaY = currentMouse.y - initialMousePosition.y
-        
+
         let newOrigin = CGPoint(
             x: initialWindowOrigin.x + deltaX,
             y: initialWindowOrigin.y + deltaY
         )
-        
+
         // Update window position
         if !setWindowOrigin(window: window, origin: newOrigin) {
             Log.info("⚠️ Failed to move window, stopping drag")
@@ -552,45 +564,46 @@ class WindowDragger {
         state = .idle
         Log.info("💤 Idle")
     }
-    
+
     // MARK: - Resize Functions
-    
+
     private func startResizing(window: AXUIElement, initialMouse: CGPoint) {
         // Get window size and PID
         guard let windowSize = getWindowSize(window),
-              let pid = getWindowPID(window) else {
+            let pid = getWindowPID(window)
+        else {
             Log.info("❌ Failed to get window info for resize")
             return
         }
-        
+
         // Activate the application
         activateApp(pid: pid)
-        
+
         // Store resize state
         capturedWindow = window
         capturedPID = pid
         initialMousePosition = initialMouse
         initialWindowSize = windowSize
         state = .resizing
-        
+
         Log.info("📏 Resizing window (PID: \(pid))")
     }
-    
+
     private func updateWindowSize(currentMouse: CGPoint) {
         guard let window = capturedWindow else {
             stopResizing()
             return
         }
-        
+
         // Calculate delta and new size
         let deltaX = currentMouse.x - initialMousePosition.x
         let deltaY = currentMouse.y - initialMousePosition.y
-        
+
         let newSize = CGSize(
             width: max(minimumWindowSize.width, initialWindowSize.width + deltaX),
             height: max(minimumWindowSize.height, initialWindowSize.height + deltaY)
         )
-        
+
         // Update window size
         if !setWindowSize(window: window, size: newSize) {
             Log.info("⚠️ Failed to resize window, stopping resize")
@@ -618,63 +631,69 @@ class WindowDragger {
             Log.info("💤 Idle")
         }
     }
-    
+
     // MARK: - Helper Functions
-    
+
     private func getWindowOrigin(_ window: AXUIElement) -> CGPoint? {
         var position: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &position) == .success,
-              let pointValue = position else {
+        guard
+            AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &position)
+                == .success,
+            let pointValue = position
+        else {
             return nil
         }
-        
+
         var point = CGPoint.zero
         AXValueGetValue(pointValue as! AXValue, AXValueType.cgPoint, &point)
         return point
     }
-    
+
     private func getWindowPID(_ window: AXUIElement) -> pid_t? {
         var pid: pid_t = 0
         let result = AXUIElementGetPid(window, &pid)
         return result == .success ? pid : nil
     }
-    
+
     private func activateApp(pid: pid_t) {
         guard let app = NSRunningApplication(processIdentifier: pid) else {
             return
         }
-        
+
         app.activate(options: [])
     }
-    
+
     private func setWindowOrigin(window: AXUIElement, origin: CGPoint) -> Bool {
         var point = origin
         guard let positionValue = AXValueCreate(AXValueType.cgPoint, &point) else {
             return false
         }
-        
-        let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, positionValue)
+
+        let result = AXUIElementSetAttributeValue(
+            window, kAXPositionAttribute as CFString, positionValue)
         return result == .success
     }
-    
+
     private func getWindowSize(_ window: AXUIElement) -> CGSize? {
         var size: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &size) == .success,
-              let sizeValue = size else {
+        guard
+            AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &size) == .success,
+            let sizeValue = size
+        else {
             return nil
         }
-        
+
         var cgSize = CGSize.zero
         AXValueGetValue(sizeValue as! AXValue, AXValueType.cgSize, &cgSize)
         return cgSize
     }
-    
+
     private func setWindowSize(window: AXUIElement, size: CGSize) -> Bool {
         var cgSize = size
         guard let sizeValue = AXValueCreate(AXValueType.cgSize, &cgSize) else {
             return false
         }
-        
+
         let result = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
         return result == .success
     }
@@ -687,13 +706,13 @@ struct Main {
         Log.configure(isEnabled: CommandLine.arguments.contains("--log"))
 
         let dragger = WindowDragger()
-        
+
         // Handle Ctrl+C
         signal(SIGINT) { _ in
             Log.info("\n👋 Goodbye!")
             exit(0)
         }
-        
+
         dragger.start()
     }
 }
