@@ -97,6 +97,24 @@ If the compiler reports that it cannot write the Swift module cache, re-run the 
 
 Console logs show the current state (`Idle`, `Armed`, `Dragging`, `Resize Armed`, `Resizing`) so you can confirm what the tool is doing at any moment.
 
+## Window Snapping
+
+ModDrag moves windows directly through the Accessibility API, so **the cursor
+never moves** — your pointer stays exactly where you grabbed. Snapping is drawn by
+ModDrag itself rather than relying on the system tiling, so it works the same on
+any macOS version:
+
+-   Drag a window so the cursor reaches the **left or right edge** to snap it to that half of the screen
+-   Reach the **top edge** to fill the screen; reach a **corner** for a quarter tile
+-   A translucent accent-colored preview marks the target tile — **release Ctrl** to snap into it
+-   Release away from any edge and the window simply stays where you dragged it
+
+The preview appears instantly (no tiling dwell delay) and updates live as you move
+between edges and corners. Tiles are sized to the screen's usable area — below the
+menu bar and beside the Dock — and snapping follows the cursor across multiple
+displays. This is independent of the macOS Sequoia "drag to screen edges to tile"
+setting; that setting can be left on or off.
+
 ## Menu Bar Icon
 
 While ModDrag is running, a window icon appears in the macOS menu bar. Its presence is the quickest way to confirm the tool is active. Click it to open a menu with:

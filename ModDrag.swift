@@ -75,6 +75,14 @@ struct WindowDraggerConfiguration {
     let emergencyStopKeyCode: UInt16
     let minimumWindowSize: CGSize
     let updateInterval: CFTimeInterval
+    /// How close (in points) the cursor must be to a screen edge to arm a snap.
+    let snapEdgeThreshold: CGFloat
+    /// Vertical extent (from the top/bottom screen edge) of the corner zones that
+    /// arm a quarter-tile instead of a half/full tile.
+    let snapCornerExtent: CGFloat
+    /// Uniform gap (in points) left around snapped windows — both from the screen
+    /// edges and between adjacent tiles.
+    let snapMargin: CGFloat
 
     static let `default` = WindowDraggerConfiguration(
         dragHotKey: HotKeyConfiguration(
@@ -87,8 +95,170 @@ struct WindowDraggerConfiguration {
         ),
         emergencyStopKeyCode: 53,
         minimumWindowSize: CGSize(width: 100, height: 100),
-        updateInterval: 1.0 / 240.0
+        updateInterval: 1.0 / 240.0,
+        snapEdgeThreshold: 8,
+        snapCornerExtent: 120,
+        snapMargin: 8
     )
+}
+
+// MARK: - Snap Targets
+//
+// ModDrag moves windows directly via the Accessibility API, so the cursor never
+// moves and edge-tiling is implemented in-process rather than relying on the
+// WindowServer. A SnapTarget is a tile the window will jump to on release; it
+// carries both the Cocoa frame (bottom-left origin) for the on-screen preview
+// and the AX frame (top-left origin) used to position and size the window.
+struct SnapTarget: Equatable {
+    let cocoaFrame: NSRect  // for the NSWindow preview overlay
+    let axFrame: CGRect  // for AXPosition / AXSize
+}
+
+// MARK: - Snap Preview Style
+
+/// The look of the snap preview overlay. Tunable live from the menu bar and
+/// persisted across launches, so the user can pick a vibe without rebuilding.
+struct SnapPreviewStyle: Equatable {
+    /// How the pane is filled. The glass fills use an NSVisualEffectView with
+    /// behind-window blending, so they blur and tint from the desktop wallpaper.
+    enum Fill: String, CaseIterable {
+        case glassDark  // dark translucent glass (.hudWindow)
+        case glassLight  // light translucent glass (.popover)
+        case vibrant  // soft wallpaper-tinted glass (.underWindowBackground)
+        case accentTint  // accent-colored selection glass (.selection)
+        case solidAccent  // flat accent fill, no blur
+
+        var title: String {
+            switch self {
+            case .glassDark: return "Glass (Dark)"
+            case .glassLight: return "Glass (Light)"
+            case .vibrant: return "Vibrant"
+            case .accentTint: return "Accent Tint"
+            case .solidAccent: return "Solid Accent"
+            }
+        }
+
+        var material: NSVisualEffectView.Material {
+            switch self {
+            case .glassDark: return .hudWindow
+            case .glassLight: return .popover
+            case .vibrant: return .underWindowBackground
+            case .accentTint: return .selection
+            case .solidAccent: return .hudWindow  // unused (solid uses a plain layer)
+            }
+        }
+    }
+
+    var fill: Fill
+    var cornerRadius: CGFloat
+
+    static let `default` = SnapPreviewStyle(fill: .glassDark, cornerRadius: 14)
+}
+
+/// Loads/saves the snap preview style to UserDefaults.
+enum SnapSettings {
+    private static let fillKey = "snapPreviewFill"
+    private static let radiusKey = "snapPreviewCornerRadius"
+    private static let marginKey = "snapMargin"
+
+    static func load() -> SnapPreviewStyle {
+        let defaults = UserDefaults.standard
+        let fill =
+            SnapPreviewStyle.Fill(rawValue: defaults.string(forKey: fillKey) ?? "")
+            ?? SnapPreviewStyle.default.fill
+        let radius =
+            defaults.object(forKey: radiusKey) != nil
+            ? CGFloat(defaults.double(forKey: radiusKey))
+            : SnapPreviewStyle.default.cornerRadius
+        return SnapPreviewStyle(fill: fill, cornerRadius: radius)
+    }
+
+    static func save(_ style: SnapPreviewStyle) {
+        let defaults = UserDefaults.standard
+        defaults.set(style.fill.rawValue, forKey: fillKey)
+        defaults.set(Double(style.cornerRadius), forKey: radiusKey)
+    }
+
+    static func loadMargin(default fallback: CGFloat) -> CGFloat {
+        let defaults = UserDefaults.standard
+        return defaults.object(forKey: marginKey) != nil
+            ? CGFloat(defaults.double(forKey: marginKey)) : fallback
+    }
+
+    static func saveMargin(_ margin: CGFloat) {
+        UserDefaults.standard.set(Double(margin), forKey: marginKey)
+    }
+}
+
+// MARK: - Snap Preview Overlay
+//
+// A borderless, click-through, non-activating window that shows a styled pane
+// over the tile the window will snap to. The glass fills use an
+// NSVisualEffectView with behind-window blending, which blurs and samples
+// whatever is behind it, so the glass takes on the desktop wallpaper's colors.
+final class SnapPreview {
+    private let window: NSWindow
+    private(set) var style: SnapPreviewStyle
+
+    init(style: SnapPreviewStyle) {
+        self.style = style
+        window = NSWindow(
+            contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.level = .floating
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        window.isReleasedWhenClosed = false
+        applyStyle(style)
+    }
+
+    /// Rebuilds the overlay's content view for `style`. Cheap and only happens on
+    /// a menu selection, so swapping the whole content view is fine.
+    func applyStyle(_ style: SnapPreviewStyle) {
+        self.style = style
+        let radius = style.cornerRadius
+
+        if style.fill == .solidAccent {
+            let view = NSView(frame: .zero)
+            view.wantsLayer = true
+            if let layer = view.layer {
+                layer.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.28).cgColor
+                layer.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+                layer.borderWidth = 2
+                layer.cornerRadius = radius
+                layer.masksToBounds = true
+            }
+            window.contentView = view
+            return
+        }
+
+        let effect = NSVisualEffectView(frame: .zero)
+        effect.material = style.fill.material
+        effect.blendingMode = .behindWindow  // blur + tint from the wallpaper behind
+        effect.state = .active
+        effect.isEmphasized = true
+        effect.wantsLayer = true
+        if let layer = effect.layer {
+            layer.cornerRadius = radius
+            layer.masksToBounds = true
+            // Subtle rim light so the glass edge reads against any wallpaper.
+            layer.borderWidth = 1
+            layer.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+        }
+        window.contentView = effect
+    }
+
+    /// Shows the preview at `frame` (Cocoa coordinates), without stealing focus.
+    func show(_ frame: NSRect) {
+        window.setFrame(frame, display: true)
+        window.orderFrontRegardless()
+    }
+
+    func hide() {
+        window.orderOut(nil)
+    }
 }
 
 // MARK: - State Management
@@ -108,6 +278,10 @@ class WindowDragger {
     private let emergencyStopKeyCode: UInt16
     private let minimumWindowSize: CGSize
     private let updateInterval: CFTimeInterval
+    private let snapEdgeThreshold: CGFloat
+    private let snapCornerExtent: CGFloat
+    /// Live-adjustable from Settings; persisted via SnapSettings.
+    private var snapMargin: CGFloat
 
     private var state: DraggerState = .idle
     private var eventTap: CFMachPort?
@@ -118,6 +292,29 @@ class WindowDragger {
     private var initialWindowOrigin: CGPoint = .zero
     private var capturedWindow: AXUIElement?
     private var capturedPID: pid_t = 0
+    /// Translucent overlay marking the tile the window will snap to on release.
+    private let snapPreview = SnapPreview(style: SnapSettings.load())
+    /// The tile armed by the current cursor position, committed on drag end.
+    private var currentSnap: SnapTarget?
+    /// Token for debouncing the sample-flash auto-hide (see flashPreviewSample).
+    private var flashGeneration = 0
+
+    // Off-thread AX writes.
+    //
+    // AX is synchronous cross-process IPC. Calling it from the synchronous
+    // event-tap callback can deadlock against the window server (which is waiting
+    // for that very callback to return) and freeze ALL input for as long as the
+    // target app stays busy. So every window mutation is dispatched to this serial
+    // queue (coalesced, latest-wins) and never runs on the tap thread; every AX
+    // element we still read on the tap thread gets a short messaging timeout as a
+    // hard backstop so it can never block for more than a fraction of a second.
+    private static let axTimeout: Float = 0.2
+    private let axQueue = DispatchQueue(label: "com.yanek.moddrag.ax", qos: .userInteractive)
+    private let axLock = NSLock()
+    private var pendingWindow: AXUIElement?
+    private var pendingOrigin: CGPoint?
+    private var pendingSize: CGSize?
+    private var axDraining = false
 
     // Resize state
     private var initialWindowSize: CGSize = .zero
@@ -132,6 +329,58 @@ class WindowDragger {
         self.emergencyStopKeyCode = configuration.emergencyStopKeyCode
         self.minimumWindowSize = configuration.minimumWindowSize
         self.updateInterval = configuration.updateInterval
+        self.snapEdgeThreshold = configuration.snapEdgeThreshold
+        self.snapCornerExtent = configuration.snapCornerExtent
+        self.snapMargin = SnapSettings.loadMargin(default: configuration.snapMargin)
+    }
+
+    // MARK: - Snap Preview Style (menu-bar settings)
+
+    /// The live snap-preview style. Read by the menu to build its checkmarks.
+    func currentPreviewStyle() -> SnapPreviewStyle {
+        snapPreview.style
+    }
+
+    /// Applies a new preview style, persists it, and flashes a sample so the user
+    /// sees the change immediately without having to start a drag.
+    func setPreviewStyle(_ style: SnapPreviewStyle) {
+        snapPreview.applyStyle(style)
+        SnapSettings.save(style)
+        flashPreviewSample()
+    }
+
+    /// The live tile gap. Read by Settings to build its slider.
+    func currentMargin() -> CGFloat {
+        snapMargin
+    }
+
+    /// Updates the tile gap, persists it, and flashes a sample.
+    func setSnapMargin(_ margin: CGFloat) {
+        snapMargin = margin
+        SnapSettings.saveMargin(margin)
+        flashPreviewSample()
+    }
+
+    /// Briefly shows the preview over the left half of the main screen so a style
+    /// change is visible at a glance. No-op during an actual drag. A generation
+    /// token ensures only the latest flash's auto-hide fires, so dragging a
+    /// settings slider keeps the sample steady instead of flickering.
+    func flashPreviewSample() {
+        guard state != .dragging, let vf = NSScreen.main?.visibleFrame else { return }
+        let g = snapMargin
+        let area = vf.insetBy(dx: g, dy: g)
+        let sample = NSRect(
+            x: area.minX, y: area.minY,
+            width: (area.width - g) / 2, height: area.height)
+        snapPreview.show(sample)
+        flashGeneration += 1
+        let generation = flashGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self = self, self.state != .dragging,
+                self.flashGeneration == generation
+            else { return }
+            self.snapPreview.hide()
+        }
     }
 
     /// Performs permission checks and installs the event tap on the current
@@ -227,9 +476,12 @@ class WindowDragger {
     }
 
     private func setupEventTap() {
+        // Note: leftMouseDragged is intentionally not tapped — ModDrag drives
+        // moves from mouseMoved while a modifier is held, so tapping fewer event
+        // types keeps this synchronous (active) tap as light as possible.
         let eventMask =
             (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
 
         eventTap = CGEvent.tapCreate(
             tap: CGEventTapLocation(rawValue: 0)!,  // kCGHIDEventTap
@@ -256,6 +508,11 @@ class WindowDragger {
         -> Unmanaged<CGEvent>?
     {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            // End any in-flight operation (hides the snap preview, commits/aborts
+            // cleanly) before re-enabling the tap.
+            if state == .dragging || state == .resizing {
+                stopCurrentOperation()
+            }
             if let tap = eventTap {
                 Log.info("⚠️ Event tap disabled, re-enabling")
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -422,10 +679,10 @@ class WindowDragger {
                 if let window = capturedWindow {
                     let windowRef = window
                     let location = event.location
-                    stopDragging()
+                    stopDragging(commitSnap: false)
                     startResizing(window: windowRef, initialMouse: location)
                 } else {
-                    stopDragging()
+                    stopDragging(commitSnap: false)
                 }
             } else if dragOnlyActive && capturedWindow != nil {
                 updateWindowPosition(currentMouse: event.location)
@@ -468,6 +725,7 @@ class WindowDragger {
 
     private func hitTestWindow(at location: CGPoint) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
+        boundAX(systemWide)
 
         var element: AXUIElement?
         let result = AXUIElementCopyElementAtPosition(
@@ -476,6 +734,7 @@ class WindowDragger {
         guard result == .success, let uiElement = element else {
             return nil
         }
+        boundAX(uiElement)
 
         // Walk up to find window
         var currentElement = uiElement
@@ -498,6 +757,7 @@ class WindowDragger {
                 let parentElement = parent
             {
                 currentElement = parentElement as! AXUIElement
+                boundAX(currentElement)
             } else {
                 break
             }
@@ -532,6 +792,7 @@ class WindowDragger {
     }
 
     private func startDragging(window: AXUIElement, initialMouse: CGPoint) {
+        boundAX(window)
         // Get window position and PID
         guard let windowOrigin = getWindowOrigin(window),
             let pid = getWindowPID(window)
@@ -540,7 +801,7 @@ class WindowDragger {
             return
         }
 
-        // Activate the application
+        // Raise/activate the window's app so the move targets the front window.
         activateApp(pid: pid)
 
         // Store drag state
@@ -548,6 +809,7 @@ class WindowDragger {
         capturedPID = pid
         initialMousePosition = initialMouse
         initialWindowOrigin = windowOrigin
+        currentSnap = nil
         state = .dragging
 
         Log.info("🎯 Dragging window (PID: \(pid))")
@@ -559,23 +821,123 @@ class WindowDragger {
             return
         }
 
-        // Calculate delta and new position
+        // Move the window 1:1 with the cursor via the Accessibility API — the
+        // cursor itself never moves, so the user's pointer stays predictable.
         let deltaX = currentMouse.x - initialMousePosition.x
         let deltaY = currentMouse.y - initialMousePosition.y
-
         let newOrigin = CGPoint(
             x: initialWindowOrigin.x + deltaX,
-            y: initialWindowOrigin.y + deltaY
-        )
+            y: initialWindowOrigin.y + deltaY)
+        // Off the tap thread — a synchronous AX move here could deadlock input.
+        enqueueWindowWrite(window: window, origin: newOrigin, size: nil)
 
-        // Update window position
-        if !setWindowOrigin(window: window, origin: newOrigin) {
-            Log.info("⚠️ Failed to move window, stopping drag")
-            stopDragging()
+        updateSnapPreview(cursor: currentMouse)
+    }
+
+    /// Re-evaluates which tile (if any) the cursor is hovering and shows/hides the
+    /// preview overlay accordingly. Only touches the overlay when the target
+    /// actually changes, so it isn't re-shown every mouse move.
+    private func updateSnapPreview(cursor: CGPoint) {
+        let target = snapTarget(forCursor: cursor)
+        if target == currentSnap { return }
+        currentSnap = target
+        if let target = target {
+            snapPreview.show(target.cocoaFrame)
+        } else {
+            snapPreview.hide()
         }
     }
 
-    private func stopDragging() {
+    /// Maps a cursor position (CG global, top-left origin) to the tile it should
+    /// snap to, or nil when it isn't near a snappable edge. Edges give half tiles,
+    /// the top gives a full tile, and the corners give quarter tiles — all sized
+    /// to the screen's visibleFrame (below the menu bar, beside the Dock).
+    private func snapTarget(forCursor cgCursor: CGPoint) -> SnapTarget? {
+        guard let primaryHeight = NSScreen.screens.first?.frame.height else { return nil }
+        // CG (top-left) -> Cocoa (bottom-left) global point.
+        let cocoaCursor = CGPoint(x: cgCursor.x, y: primaryHeight - cgCursor.y)
+        guard
+            let screen = NSScreen.screens.first(where: {
+                NSMouseInRect(cocoaCursor, $0.frame, false)
+            }) ?? NSScreen.main
+        else { return nil }
+
+        let frame = screen.frame  // full screen, for edge detection
+        let vf = screen.visibleFrame  // tile area, excludes menu bar + Dock
+        let edge = snapEdgeThreshold
+        let corner = snapCornerExtent
+
+        let atLeft = cocoaCursor.x <= frame.minX + edge
+        let atRight = cocoaCursor.x >= frame.maxX - edge
+        let atTop = cocoaCursor.y >= frame.maxY - edge  // Cocoa: top is high y
+        let nearTop = cocoaCursor.y >= frame.maxY - corner
+        let nearBottom = cocoaCursor.y <= frame.minY + corner
+
+        // Inset the usable area by the margin, then split it leaving a margin-sized
+        // gap between halves/quarters — so every tile keeps a uniform gap from the
+        // screen edges and from its neighbors.
+        let g = snapMargin
+        let area = vf.insetBy(dx: g, dy: g)
+        let halfW = (area.width - g) / 2
+        let halfH = (area.height - g) / 2
+        let leftX = area.minX
+        let rightX = area.maxX - halfW
+        let botY = area.minY
+        let topY = area.maxY - halfH
+
+        let leftHalf = NSRect(x: leftX, y: area.minY, width: halfW, height: area.height)
+        let rightHalf = NSRect(x: rightX, y: area.minY, width: halfW, height: area.height)
+        let topLeft = NSRect(x: leftX, y: topY, width: halfW, height: halfH)
+        let topRight = NSRect(x: rightX, y: topY, width: halfW, height: halfH)
+        let botLeft = NSRect(x: leftX, y: botY, width: halfW, height: halfH)
+        let botRight = NSRect(x: rightX, y: botY, width: halfW, height: halfH)
+
+        let cocoaFrame: NSRect?
+        if atLeft && nearTop {
+            cocoaFrame = topLeft
+        } else if atLeft && nearBottom {
+            cocoaFrame = botLeft
+        } else if atRight && nearTop {
+            cocoaFrame = topRight
+        } else if atRight && nearBottom {
+            cocoaFrame = botRight
+        } else if atLeft {
+            cocoaFrame = leftHalf
+        } else if atRight {
+            cocoaFrame = rightHalf
+        } else if atTop {
+            cocoaFrame = area  // full
+        } else {
+            cocoaFrame = nil
+        }
+
+        guard let cf = cocoaFrame else { return nil }
+        return SnapTarget(
+            cocoaFrame: cf,
+            axFrame: axFrame(fromCocoa: cf, primaryHeight: primaryHeight))
+    }
+
+    /// Converts a Cocoa frame (bottom-left origin) to the CG/AX frame (top-left
+    /// origin) used by AXPosition/AXSize. The y axis flips about the primary
+    /// screen's height; x is unchanged.
+    private func axFrame(fromCocoa rect: NSRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(
+            x: rect.minX,
+            y: primaryHeight - rect.maxY,
+            width: rect.width,
+            height: rect.height)
+    }
+
+    /// Ends a drag. When `commitSnap` is true and a tile is armed, the window is
+    /// snapped to it via AX; otherwise the window just stays where it was dragged.
+    /// `commitSnap` is false when the drag is being converted into a resize.
+    private func stopDragging(commitSnap: Bool = true) {
+        if commitSnap, let window = capturedWindow, let snap = currentSnap {
+            enqueueWindowWrite(
+                window: window, origin: snap.axFrame.origin, size: snap.axFrame.size)
+        }
+        snapPreview.hide()
+        currentSnap = nil
         capturedWindow = nil
         capturedPID = 0
         initialMousePosition = .zero
@@ -587,6 +949,7 @@ class WindowDragger {
     // MARK: - Resize Functions
 
     private func startResizing(window: AXUIElement, initialMouse: CGPoint) {
+        boundAX(window)
         // Get window size and PID
         guard let windowSize = getWindowSize(window),
             let pid = getWindowPID(window)
@@ -623,11 +986,8 @@ class WindowDragger {
             height: max(minimumWindowSize.height, initialWindowSize.height + deltaY)
         )
 
-        // Update window size
-        if !setWindowSize(window: window, size: newSize) {
-            Log.info("⚠️ Failed to resize window, stopping resize")
-            stopResizing()
-        }
+        // Off the tap thread — a synchronous AX resize here could deadlock input.
+        enqueueWindowWrite(window: window, origin: nil, size: newSize)
     }
 
     private func stopResizing() {
@@ -716,6 +1076,206 @@ class WindowDragger {
         let result = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
         return result == .success
     }
+
+    // MARK: - AX Safety (off-thread writes + bounded timeouts)
+
+    /// Caps how long any message to `element` can block. Set on every element we
+    /// read on the event-tap thread so a busy app can never wedge input.
+    private func boundAX(_ element: AXUIElement) {
+        AXUIElementSetMessagingTimeout(element, WindowDragger.axTimeout)
+    }
+
+    /// Queues a window move/resize to run off the event-tap thread, coalescing to
+    /// the latest requested origin/size so a slow app can't back the queue up.
+    /// Never call AX to move a window directly from the tap callback.
+    private func enqueueWindowWrite(window: AXUIElement, origin: CGPoint?, size: CGSize?) {
+        axLock.lock()
+        pendingWindow = window
+        if let origin = origin { pendingOrigin = origin }
+        if let size = size { pendingSize = size }
+        let shouldStart = !axDraining
+        if shouldStart { axDraining = true }
+        axLock.unlock()
+        guard shouldStart else { return }
+        axQueue.async { [weak self] in self?.drainWindowWrites() }
+    }
+
+    private func drainWindowWrites() {
+        while true {
+            axLock.lock()
+            guard let window = pendingWindow, pendingOrigin != nil || pendingSize != nil else {
+                axDraining = false
+                pendingWindow = nil
+                axLock.unlock()
+                return
+            }
+            let origin = pendingOrigin
+            let size = pendingSize
+            pendingOrigin = nil
+            pendingSize = nil
+            axLock.unlock()
+            // Size first so a window can shrink before moving into a smaller tile,
+            // then position, then size again so stubborn windows settle into it.
+            if let size = size { _ = setWindowSize(window: window, size: size) }
+            if let origin = origin { _ = setWindowOrigin(window: window, origin: origin) }
+            if let size = size { _ = setWindowSize(window: window, size: size) }
+        }
+    }
+}
+
+// MARK: - Settings Window
+
+/// A small programmatic preferences window for tuning the snap preview live.
+/// Changes apply to the dragger immediately (and flash a sample), and are
+/// persisted by the dragger via SnapSettings.
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    private let dragger: WindowDragger
+    private var window: NSWindow?
+
+    private var stylePopUp: NSPopUpButton?
+    private var cornerSlider: NSSlider?
+    private var cornerValue: NSTextField?
+    private var marginSlider: NSSlider?
+    private var marginValue: NSTextField?
+
+    init(dragger: WindowDragger) {
+        self.dragger = dragger
+        super.init()
+    }
+
+    /// Builds the window on first use, then brings it (and the app) to the front.
+    func show() {
+        if window == nil { buildWindow() }
+        syncControls()
+        NSApp.activate(ignoringOtherApps: true)
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func buildWindow() {
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        win.title = "ModDrag Settings"
+        win.isReleasedWhenClosed = false
+        win.delegate = self
+
+        let stylePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+        stylePopUp.addItems(withTitles: SnapPreviewStyle.Fill.allCases.map { $0.title })
+        stylePopUp.target = self
+        stylePopUp.action = #selector(styleChanged)
+        self.stylePopUp = stylePopUp
+
+        let cornerSlider = NSSlider(value: 14, minValue: 0, maxValue: 28, target: self,
+            action: #selector(cornerChanged))
+        self.cornerSlider = cornerSlider
+        let cornerValue = makeValueLabel()
+        self.cornerValue = cornerValue
+
+        let marginSlider = NSSlider(value: 8, minValue: 0, maxValue: 40, target: self,
+            action: #selector(marginChanged))
+        self.marginSlider = marginSlider
+        let marginValue = makeValueLabel()
+        self.marginValue = marginValue
+
+        let grid = NSGridView(views: [
+            [makeLabel("Style:"), stylePopUp],
+            [makeLabel("Corner radius:"), sliderRow(cornerSlider, cornerValue)],
+            [makeLabel("Tile gap:"), sliderRow(marginSlider, marginValue)],
+        ])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.columnSpacing = 12
+        grid.rowSpacing = 16
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowAlignment = .firstBaseline
+
+        let hint = makeLabel(
+            "Changes apply instantly and a sample flashes on your main screen.")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSView()
+        content.addSubview(grid)
+        content.addSubview(hint)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            grid.trailingAnchor.constraint(
+                lessThanOrEqualTo: content.trailingAnchor, constant: -24),
+            hint.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 20),
+            hint.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            hint.trailingAnchor.constraint(
+                lessThanOrEqualTo: content.trailingAnchor, constant: -24),
+        ])
+        win.contentView = content
+        window = win
+    }
+
+    // MARK: Control factories
+
+    private func makeLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        return label
+    }
+
+    private func makeValueLabel() -> NSTextField {
+        let label = NSTextField(labelWithString: "0")
+        label.alignment = .right
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        return label
+    }
+
+    private func sliderRow(_ slider: NSSlider, _ value: NSTextField) -> NSView {
+        let stack = NSStackView(views: [slider, value])
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        slider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        value.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        return stack
+    }
+
+    // MARK: Sync + actions
+
+    /// Pulls the dragger's current values into the controls (on open).
+    private func syncControls() {
+        let style = dragger.currentPreviewStyle()
+        let margin = dragger.currentMargin()
+        if let index = SnapPreviewStyle.Fill.allCases.firstIndex(of: style.fill) {
+            stylePopUp?.selectItem(at: index)
+        }
+        cornerSlider?.doubleValue = Double(style.cornerRadius)
+        cornerValue?.stringValue = "\(Int(style.cornerRadius))"
+        marginSlider?.doubleValue = Double(margin)
+        marginValue?.stringValue = "\(Int(margin))"
+    }
+
+    @objc private func styleChanged() {
+        guard let index = stylePopUp?.indexOfSelectedItem,
+            SnapPreviewStyle.Fill.allCases.indices.contains(index)
+        else { return }
+        var style = dragger.currentPreviewStyle()
+        style.fill = SnapPreviewStyle.Fill.allCases[index]
+        dragger.setPreviewStyle(style)
+    }
+
+    @objc private func cornerChanged() {
+        guard let slider = cornerSlider else { return }
+        let radius = CGFloat(slider.doubleValue.rounded())
+        cornerValue?.stringValue = "\(Int(radius))"
+        var style = dragger.currentPreviewStyle()
+        style.cornerRadius = radius
+        dragger.setPreviewStyle(style)
+    }
+
+    @objc private func marginChanged() {
+        guard let slider = marginSlider else { return }
+        let margin = CGFloat(slider.doubleValue.rounded())
+        marginValue?.stringValue = "\(Int(margin))"
+        dragger.setSnapMargin(margin)
+    }
 }
 
 // MARK: - Status Bar (System Tray)
@@ -728,6 +1288,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var permissionTimer: Timer?
     private var draggerStarted = false
+    private var settingsController: SettingsWindowController?
 
     init(dragger: WindowDragger) {
         self.dragger = dragger
@@ -791,9 +1352,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusLine)
 
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
         menu.addItem(makeQuitItem())
 
         item.menu = menu
+    }
+
+    @objc private func openSettings() {
+        if settingsController == nil {
+            settingsController = SettingsWindowController(dragger: dragger)
+        }
+        settingsController?.show()
     }
 
     /// Permission-missing look: warning glyph + a menu that links to Settings.
