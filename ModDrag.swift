@@ -764,16 +764,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         applyRunningAppearance()
     }
 
+    /// Loads the bundled monochrome menu-bar template (TrayIcon.pdf), falling
+    /// back to the `macwindow` SF Symbol when running as a bare binary (no bundle).
+    private func runningTrayImage() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "TrayIcon", withExtension: "pdf"),
+           let image = NSImage(contentsOf: url)
+        {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 18)
+            return image
+        }
+        let symbol = NSImage(
+            systemSymbolName: "macwindow.on.rectangle",
+            accessibilityDescription: "ModDrag")
+        symbol?.isTemplate = true
+        return symbol
+    }
+
     /// Normal running look: window glyph + a minimal running menu.
     private func applyRunningAppearance() {
         guard let item = statusItem else { return }
 
         if let button = item.button {
-            if let image = NSImage(
-                systemSymbolName: "macwindow.on.rectangle",
-                accessibilityDescription: "ModDrag")
-            {
-                image.isTemplate = true
+            if let image = runningTrayImage() {
                 button.image = image
                 button.title = ""
             } else {

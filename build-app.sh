@@ -20,9 +20,17 @@ cd "$(dirname "$0")"
 echo "==> Cleaning previous bundle"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
+mkdir -p "$BUNDLE/Contents/Resources"
 
 echo "==> Compiling Swift sources"
 swiftc -O ModDrag.swift -o "$BUNDLE/Contents/MacOS/$APP_NAME"
+
+echo "==> Installing app icon"
+if [ ! -f scripts/AppIcon.icns ] || [ ! -f scripts/TrayIcon.pdf ]; then
+    ./scripts/build-icon.sh
+fi
+cp scripts/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
+cp scripts/TrayIcon.pdf "$BUNDLE/Contents/Resources/TrayIcon.pdf"
 
 echo "==> Writing Info.plist"
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -42,6 +50,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <string>${VERSION}</string>
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

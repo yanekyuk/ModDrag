@@ -23,7 +23,8 @@ Terminal. To get a true no-terminal launch, build the `.app` bundle:
 ```
 
 This compiles `ModDrag.swift`, wraps the binary in `ModDrag.app` (with `LSUIElement`
-set so it runs as a menu-bar accessory), and ad-hoc code-signs it. Launch it with:
+set so it runs as a menu-bar accessory), installs the app icon, and ad-hoc
+code-signs it. Launch it with:
 
 ```bash
 open ModDrag.app
@@ -33,6 +34,23 @@ or by double-clicking `ModDrag.app` in Finder. It appears in the menu bar with n
 Dock icon and no terminal window. Because the bundle has its own identity, macOS
 treats it as a distinct app for Accessibility — grant **ModDrag** access on first
 launch (see below).
+
+### App icon
+
+The app icon is generated from code — no image editor required. `scripts/make-icon.swift`
+renders a 1024×1024 master with AppKit/Core Graphics (a minimal window glyph on a
+blue squircle), and `scripts/build-icon.sh` turns it into `scripts/AppIcon.icns`
+via `sips` + `iconutil`:
+
+```bash
+./scripts/build-icon.sh
+```
+
+`build-app.sh` copies `AppIcon.icns` into the bundle's `Resources/` and sets
+`CFBundleIconFile`. To restyle the icon, edit `scripts/make-icon.swift` and re-run
+`build-icon.sh` (then `build-app.sh`). Because ModDrag is an `LSUIElement` accessory
+it has no Dock icon, but the app icon still appears in Finder, Get Info, Spotlight,
+and the System Settings → Accessibility list.
 
 ### Bare binary
 
