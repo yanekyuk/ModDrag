@@ -67,5 +67,16 @@ PLIST
 echo "==> Code signing (ad-hoc)"
 codesign --force --deep --sign - "$BUNDLE"
 
+# macOS caches app icons by bundle path, so rebuilding the same ModDrag.app at
+# the same location keeps showing the previously cached icon. Re-register the
+# bundle with LaunchServices and bump its mtime so Finder/Dock pick up the icon.
+echo "==> Refreshing LaunchServices icon cache"
+touch "$BUNDLE"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$BUNDLE" || true
+fi
+
 echo "==> Done: $BUNDLE"
 echo "    Launch with: open $BUNDLE"
+echo "    If Finder still shows a stale icon, run: killall Finder"
