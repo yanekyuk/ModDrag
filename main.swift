@@ -112,16 +112,20 @@ class WindowDragger {
         self.updateInterval = configuration.updateInterval
     }
 
-    func start() {
+    /// Performs permission checks and installs the event tap on the current
+    /// run loop. Returns `false` if the dragger could not start. The caller is
+    /// responsible for running the run loop (e.g. via `NSApplication.run()`).
+    @discardableResult
+    func start() -> Bool {
         // Check accessibility permissions
         guard checkAccessibilityPermissions() else {
-            exit(1)
+            return false
         }
 
         // Create event tap
         setupEventTap()
 
-        // Start run loop
+        // Announce startup
         let triggerDescription = hotKeyDescription(for: dragHotKey, action: "Move windows")
         let resizeDescription = hotKeyDescription(for: resizeHotKey, action: "Resize windows")
         Log.always("Window Dragger started.")
@@ -130,7 +134,7 @@ class WindowDragger {
         Log.always(
             "Press \(emergencyStopDescription()) to stop the current operation, Ctrl+C to quit.")
 
-        CFRunLoopRun()
+        return true
     }
 
     private func checkAccessibilityPermissions() -> Bool {
@@ -699,6 +703,77 @@ class WindowDragger {
     }
 }
 
+// MARK: - Status Bar (System Tray)
+
+/// Owns the menu bar status item and runs the dragger inside the AppKit run
+/// loop. The presence of the icon in the menu bar signals that ModDrag is
+/// running; the menu offers a quick way to quit.
+class AppDelegate: NSObject, NSApplicationDelegate {
+    private let dragger: WindowDragger
+    private var statusItem: NSStatusItem?
+
+    init(dragger: WindowDragger) {
+        self.dragger = dragger
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupStatusItem()
+
+        // Install the event tap on the AppKit main run loop.
+        guard dragger.start() else {
+            // Permission missing (instructions already printed). Surface a hint
+            // in the menu bar so the user knows why nothing is happening, then
+            // quit shortly after so the process does not linger uselessly.
+            statusItem?.button?.title = "⚠️"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                NSApplication.shared.terminate(nil)
+            }
+            return
+        }
+    }
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        if let button = item.button {
+            // Prefer an SF Symbol; fall back to text on older systems.
+            if let image = NSImage(
+                systemSymbolName: "macwindow.on.rectangle",
+                accessibilityDescription: "ModDrag")
+            {
+                image.isTemplate = true
+                button.image = image
+            } else {
+                button.title = "⬚"
+            }
+            button.toolTip = "ModDrag — running"
+        }
+
+        let menu = NSMenu()
+
+        let statusLine = NSMenuItem(title: "ModDrag — Running", action: nil, keyEquivalent: "")
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Quit ModDrag",
+            action: #selector(quit),
+            keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        item.menu = menu
+        self.statusItem = item
+    }
+
+    @objc private func quit() {
+        NSApplication.shared.terminate(nil)
+    }
+}
+
 // MARK: - Main
 @main
 struct Main {
@@ -707,12 +782,18 @@ struct Main {
 
         let dragger = WindowDragger()
 
-        // Handle Ctrl+C
+        // Handle Ctrl+C (still works when launched from a terminal).
         signal(SIGINT) { _ in
             Log.info("\n👋 Goodbye!")
             exit(0)
         }
 
-        dragger.start()
+        let app = NSApplication.shared
+        // Accessory app: live in the menu bar, no Dock icon, no main window.
+        app.setActivationPolicy(.accessory)
+
+        let delegate = AppDelegate(dragger: dragger)
+        app.delegate = delegate
+        app.run()
     }
 }

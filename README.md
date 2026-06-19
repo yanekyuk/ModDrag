@@ -4,6 +4,7 @@ ModDrag is a lightweight Swift CLI that lets you move and resize macOS windows b
 
 ## Features
 
+-   A menu bar (system tray) icon that shows ModDrag is running and offers a one-click **Quit ModDrag**
 -   Configurable drag and resize shortcuts that can be modifier-only or a key plus modifiers
 -   Smooth window movement with 240 Hz rate limiting for responsive tracking without unnecessary CPU load
 -   Seamless switching between dragging and resizing while keeping the same window captured
@@ -39,6 +40,15 @@ If the compiler reports that it cannot write the Swift module cache, re-run the 
     - Press `Esc` to abandon the current operation
 
 Console logs show the current state (`Idle`, `Armed`, `Dragging`, `Resize Armed`, `Resizing`) so you can confirm what the tool is doing at any moment.
+
+## Menu Bar Icon
+
+While ModDrag is running, a window icon appears in the macOS menu bar. Its presence is the quickest way to confirm the tool is active. Click it to open a menu with:
+
+-   **ModDrag — Running** — a status line confirming the tool is live
+-   **Quit ModDrag** (`⌘Q`) — cleanly stops the tool
+
+ModDrag runs as an accessory app, so it stays out of the Dock and the app switcher. You can still launch it from a terminal and quit with `Ctrl+C` as before.
 
 ## Default Shortcuts
 
