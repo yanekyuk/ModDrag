@@ -524,10 +524,14 @@ class WindowDragger {
             let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
 
             if keyCode == emergencyStopKeyCode {
+                // Only consume Esc when it actually cancels an in-flight
+                // operation. Otherwise pass it through so Esc keeps working
+                // system-wide (closing menus, exiting fields, vim, etc.).
                 if state == .dragging || state == .resizing {
                     stopCurrentOperation()
+                    return nil
                 }
-                return nil
+                return Unmanaged.passUnretained(event)
             }
 
             if dragHotKey.matchesKeyEvent(event) {
