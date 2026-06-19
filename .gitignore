@@ -4,5 +4,7 @@
 mod-drag
 .rpiv
 ModDrag.app
+ModDrag.dmg
 
 /scripts/icon-1024.png
+*.dmg
