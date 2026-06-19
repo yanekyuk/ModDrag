@@ -39,18 +39,6 @@ enum AccessibilityPermission {
         AXIsProcessTrusted()
     }
 
-    /// Triggers the macOS "would like to control this computer" system prompt.
-    /// Returns the current trust state. Safe to call repeatedly; macOS shows the
-    /// prompt at most once per app until the user responds.
-    @discardableResult
-    static func prompt() -> Bool {
-        // Literal key value of kAXTrustedCheckOptionPrompt ("AXTrustedCheckOptionPrompt").
-        // Using the literal avoids the Unmanaged<CFString> vs CFString bridging
-        // differences of the imported constant across SDK versions.
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
-    }
-
     /// Opens System Settings directly on Privacy & Security → Accessibility.
     static func openSettings() {
         guard let url = URL(
@@ -881,10 +869,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func enterPermissionNeededState() {
         applyPermissionNeededAppearance()
 
-        // Fire the macOS system prompt (D1).
-        AccessibilityPermission.prompt()
+        // ModDrag presents its own permission dialog (presentPermissionAlert);
+        // we deliberately do NOT fire the macOS "AXTrustedCheckOptionPrompt"
+        // system prompt, which would stack a second, redundant dialog on top.
 
-        // Poll so we can auto-start the moment the user grants access (D2).
+        // Poll so we can relaunch the moment the user grants access.
         startPollingForPermission()
 
         // Explain the situation with a direct path to the right Settings pane.
@@ -904,7 +893,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if NSApp.modalWindow != nil {
                 NSApp.abortModal()
             }
-            self.startDragger()
+            // A freshly granted accessibility right is not reliably picked up by
+            // an already-running event tap, so relaunch cleanly instead of
+            // starting the dragger in-place.
+            self.relaunchAndQuit()
         }
         // .common so the timer keeps firing while the NSAlert modal loop runs.
         RunLoop.main.add(timer, forMode: .common)
@@ -929,6 +921,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             break
         }
+    }
+
+    /// Relaunches ModDrag and terminates the current instance. Used right after
+    /// the user grants Accessibility access so the new process starts with the
+    /// permission already in effect.
+    private func relaunchAndQuit() {
+        let task = Process()
+        let bundleURL = Bundle.main.bundleURL
+
+        if bundleURL.pathExtension == "app" {
+            // Running from ModDrag.app — re-open the bundle as a new instance.
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = ["-n", bundleURL.path]
+        } else {
+            // Running as a bare binary — re-exec the executable directly.
+            task.executableURL = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0])
+            task.arguments = Array(CommandLine.arguments.dropFirst())
+        }
+
+        do {
+            try task.run()
+        } catch {
+            Log.info("⚠️ Failed to relaunch after permission grant: \(error). Starting in-place.")
+            startDragger()
+            return
+        }
+
+        NSApplication.shared.terminate(nil)
     }
 
     // MARK: - Actions
