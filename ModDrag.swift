@@ -114,6 +114,18 @@ struct SnapTarget: Equatable {
     let axFrame: CGRect  // for AXPosition / AXSize
 }
 
+/// Extra user-controlled padding removed from the screen's visibleFrame before
+/// snapping tiles are calculated. This lets users reserve space for Stage Manager,
+/// desktop widgets, or any other screen-edge layout they prefer.
+struct SnapAreaMargins: Equatable {
+    var top: CGFloat
+    var bottom: CGFloat
+    var left: CGFloat
+    var right: CGFloat
+
+    static let zero = SnapAreaMargins(top: 0, bottom: 0, left: 0, right: 0)
+}
+
 // MARK: - Snap Preview Style
 
 /// The look of the snap preview overlay. Tunable live from the menu bar and
@@ -160,6 +172,10 @@ enum SnapSettings {
     private static let fillKey = "snapPreviewFill"
     private static let radiusKey = "snapPreviewCornerRadius"
     private static let marginKey = "snapMargin"
+    private static let areaTopKey = "snapAreaMarginTop"
+    private static let areaBottomKey = "snapAreaMarginBottom"
+    private static let areaLeftKey = "snapAreaMarginLeft"
+    private static let areaRightKey = "snapAreaMarginRight"
 
     static func load() -> SnapPreviewStyle {
         let defaults = UserDefaults.standard
@@ -187,6 +203,27 @@ enum SnapSettings {
 
     static func saveMargin(_ margin: CGFloat) {
         UserDefaults.standard.set(Double(margin), forKey: marginKey)
+    }
+
+    static func loadAreaMargins() -> SnapAreaMargins {
+        let defaults = UserDefaults.standard
+        return SnapAreaMargins(
+            top: loadCGFloat(areaTopKey, defaults: defaults),
+            bottom: loadCGFloat(areaBottomKey, defaults: defaults),
+            left: loadCGFloat(areaLeftKey, defaults: defaults),
+            right: loadCGFloat(areaRightKey, defaults: defaults))
+    }
+
+    static func saveAreaMargins(_ margins: SnapAreaMargins) {
+        let defaults = UserDefaults.standard
+        defaults.set(Double(margins.top), forKey: areaTopKey)
+        defaults.set(Double(margins.bottom), forKey: areaBottomKey)
+        defaults.set(Double(margins.left), forKey: areaLeftKey)
+        defaults.set(Double(margins.right), forKey: areaRightKey)
+    }
+
+    private static func loadCGFloat(_ key: String, defaults: UserDefaults) -> CGFloat {
+        defaults.object(forKey: key) != nil ? CGFloat(defaults.double(forKey: key)) : 0
     }
 }
 
@@ -282,6 +319,9 @@ class WindowDragger {
     private let snapCornerExtent: CGFloat
     /// Live-adjustable from Settings; persisted via SnapSettings.
     private var snapMargin: CGFloat
+    /// Extra user-controlled padding removed from the visibleFrame before tiles
+    /// are calculated.
+    private var snapAreaMargins: SnapAreaMargins
 
     private var state: DraggerState = .idle
     private var eventTap: CFMachPort?
@@ -332,6 +372,7 @@ class WindowDragger {
         self.snapEdgeThreshold = configuration.snapEdgeThreshold
         self.snapCornerExtent = configuration.snapCornerExtent
         self.snapMargin = SnapSettings.loadMargin(default: configuration.snapMargin)
+        self.snapAreaMargins = SnapSettings.loadAreaMargins()
     }
 
     // MARK: - Snap Preview Style (menu-bar settings)
@@ -361,17 +402,27 @@ class WindowDragger {
         flashPreviewSample()
     }
 
-    /// Briefly shows the preview over the left half of the main screen so a style
-    /// change is visible at a glance. No-op during an actual drag. A generation
+    /// The live snap-area margins. Read by Settings to build its sliders.
+    func currentAreaMargins() -> SnapAreaMargins {
+        snapAreaMargins
+    }
+
+    /// Updates the snap-area margins, persists them, and flashes a sample.
+    func setSnapAreaMargins(_ margins: SnapAreaMargins) {
+        snapAreaMargins = margins
+        SnapSettings.saveAreaMargins(margins)
+        flashPreviewSample()
+    }
+
+    /// Briefly shows the preview over the usable snap area so edge-margin changes
+    /// are visible at a glance. No-op during an actual drag. A generation
     /// token ensures only the latest flash's auto-hide fires, so dragging a
     /// settings slider keeps the sample steady instead of flickering.
     func flashPreviewSample() {
-        guard state != .dragging, let vf = NSScreen.main?.visibleFrame else { return }
+        guard state != .dragging, let screen = NSScreen.main else { return }
         let g = snapMargin
-        let area = vf.insetBy(dx: g, dy: g)
-        let sample = NSRect(
-            x: area.minX, y: area.minY,
-            width: (area.width - g) / 2, height: area.height)
+        let sample = snapUsableFrame(for: screen).insetBy(dx: g, dy: g)
+        guard sample.width > 0, sample.height > 0 else { return }
         snapPreview.show(sample)
         flashGeneration += 1
         let generation = flashGeneration
@@ -867,7 +918,7 @@ class WindowDragger {
         else { return nil }
 
         let frame = screen.frame  // full screen, for edge detection
-        let vf = screen.visibleFrame  // tile area, excludes menu bar + Dock
+        let vf = snapUsableFrame(for: screen)  // tile area, excludes menu bar + Dock
         let edge = snapEdgeThreshold
         let corner = snapCornerExtent
 
@@ -919,6 +970,31 @@ class WindowDragger {
         return SnapTarget(
             cocoaFrame: cf,
             axFrame: axFrame(fromCocoa: cf, primaryHeight: primaryHeight))
+    }
+
+    /// The screen area used for snapping before tile margins are applied.
+    /// visibleFrame already removes the menu bar and Dock; these user margins
+    /// reserve any additional edge space the user wants (for Stage Manager,
+    /// desktop widgets, or personal layout preferences).
+    private func snapUsableFrame(for screen: NSScreen) -> NSRect {
+        var frame = screen.visibleFrame
+        let margins = snapAreaMargins
+
+        let left = min(max(0, margins.left), max(0, frame.width - minimumWindowSize.width))
+        frame.origin.x += left
+        frame.size.width -= left
+
+        let right = min(max(0, margins.right), max(0, frame.width - minimumWindowSize.width))
+        frame.size.width -= right
+
+        let bottom = min(max(0, margins.bottom), max(0, frame.height - minimumWindowSize.height))
+        frame.origin.y += bottom
+        frame.size.height -= bottom
+
+        let top = min(max(0, margins.top), max(0, frame.height - minimumWindowSize.height))
+        frame.size.height -= top
+
+        return frame
     }
 
     /// Converts a Cocoa frame (bottom-left origin) to the CG/AX frame (top-left
@@ -1141,6 +1217,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var cornerValue: NSTextField?
     private var marginSlider: NSSlider?
     private var marginValue: NSTextField?
+    private var areaTopSlider: NSSlider?
+    private var areaTopValue: NSTextField?
+    private var areaBottomSlider: NSSlider?
+    private var areaBottomValue: NSTextField?
+    private var areaLeftSlider: NSSlider?
+    private var areaLeftValue: NSTextField?
+    private var areaRightSlider: NSSlider?
+    private var areaRightValue: NSTextField?
 
     init(dragger: WindowDragger) {
         self.dragger = dragger
@@ -1158,7 +1242,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     private func buildWindow() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 430),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         win.title = "ModDrag Settings"
@@ -1183,10 +1267,34 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let marginValue = makeValueLabel()
         self.marginValue = marginValue
 
+        let areaTopSlider = makeAreaMarginSlider(action: #selector(areaTopChanged))
+        self.areaTopSlider = areaTopSlider
+        let areaTopValue = makeValueLabel()
+        self.areaTopValue = areaTopValue
+
+        let areaBottomSlider = makeAreaMarginSlider(action: #selector(areaBottomChanged))
+        self.areaBottomSlider = areaBottomSlider
+        let areaBottomValue = makeValueLabel()
+        self.areaBottomValue = areaBottomValue
+
+        let areaLeftSlider = makeAreaMarginSlider(action: #selector(areaLeftChanged))
+        self.areaLeftSlider = areaLeftSlider
+        let areaLeftValue = makeValueLabel()
+        self.areaLeftValue = areaLeftValue
+
+        let areaRightSlider = makeAreaMarginSlider(action: #selector(areaRightChanged))
+        self.areaRightSlider = areaRightSlider
+        let areaRightValue = makeValueLabel()
+        self.areaRightValue = areaRightValue
+
         let grid = NSGridView(views: [
             [makeLabel("Style:"), stylePopUp],
             [makeLabel("Corner radius:"), sliderRow(cornerSlider, cornerValue)],
             [makeLabel("Tile gap:"), sliderRow(marginSlider, marginValue)],
+            [makeLabel("Top margin:"), sliderRow(areaTopSlider, areaTopValue)],
+            [makeLabel("Bottom margin:"), sliderRow(areaBottomSlider, areaBottomValue)],
+            [makeLabel("Left margin:"), sliderRow(areaLeftSlider, areaLeftValue)],
+            [makeLabel("Right margin:"), sliderRow(areaRightSlider, areaRightValue)],
         ])
         grid.translatesAutoresizingMaskIntoConstraints = false
         grid.columnSpacing = 12
@@ -1195,9 +1303,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         grid.rowAlignment = .firstBaseline
 
         let hint = makeLabel(
-            "Changes apply instantly and a sample flashes on your main screen.")
+            "Margins reserve screen edges for widgets, Stage Manager, or your preferred layout. The preview shows the usable snap area.")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 2
         hint.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -1236,9 +1346,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let stack = NSStackView(views: [slider, value])
         stack.orientation = .horizontal
         stack.spacing = 8
-        slider.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        value.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        slider.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        value.widthAnchor.constraint(equalToConstant: 48).isActive = true
         return stack
+    }
+
+    private func makeAreaMarginSlider(action: Selector) -> NSSlider {
+        NSSlider(value: 0, minValue: 0, maxValue: 400, target: self, action: action)
     }
 
     // MARK: Sync + actions
@@ -1247,6 +1361,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func syncControls() {
         let style = dragger.currentPreviewStyle()
         let margin = dragger.currentMargin()
+        let areaMargins = dragger.currentAreaMargins()
         if let index = SnapPreviewStyle.Fill.allCases.firstIndex(of: style.fill) {
             stylePopUp?.selectItem(at: index)
         }
@@ -1254,6 +1369,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         cornerValue?.stringValue = "\(Int(style.cornerRadius))"
         marginSlider?.doubleValue = Double(margin)
         marginValue?.stringValue = "\(Int(margin))"
+        syncAreaMarginControls(areaMargins)
     }
 
     @objc private func styleChanged() {
@@ -1279,6 +1395,54 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let margin = CGFloat(slider.doubleValue.rounded())
         marginValue?.stringValue = "\(Int(margin))"
         dragger.setSnapMargin(margin)
+    }
+
+    @objc private func areaTopChanged() {
+        guard let slider = areaTopSlider else { return }
+        updateAreaMargins(value: CGFloat(slider.doubleValue.rounded())) { margins, value in
+            margins.top = value
+        }
+    }
+
+    @objc private func areaBottomChanged() {
+        guard let slider = areaBottomSlider else { return }
+        updateAreaMargins(value: CGFloat(slider.doubleValue.rounded())) { margins, value in
+            margins.bottom = value
+        }
+    }
+
+    @objc private func areaLeftChanged() {
+        guard let slider = areaLeftSlider else { return }
+        updateAreaMargins(value: CGFloat(slider.doubleValue.rounded())) { margins, value in
+            margins.left = value
+        }
+    }
+
+    @objc private func areaRightChanged() {
+        guard let slider = areaRightSlider else { return }
+        updateAreaMargins(value: CGFloat(slider.doubleValue.rounded())) { margins, value in
+            margins.right = value
+        }
+    }
+
+    private func updateAreaMargins(value: CGFloat,
+        _ apply: (inout SnapAreaMargins, CGFloat) -> Void)
+    {
+        var margins = dragger.currentAreaMargins()
+        apply(&margins, value)
+        syncAreaMarginControls(margins)
+        dragger.setSnapAreaMargins(margins)
+    }
+
+    private func syncAreaMarginControls(_ margins: SnapAreaMargins) {
+        areaTopSlider?.doubleValue = Double(margins.top)
+        areaTopValue?.stringValue = "\(Int(margins.top))"
+        areaBottomSlider?.doubleValue = Double(margins.bottom)
+        areaBottomValue?.stringValue = "\(Int(margins.bottom))"
+        areaLeftSlider?.doubleValue = Double(margins.left)
+        areaLeftValue?.stringValue = "\(Int(margins.left))"
+        areaRightSlider?.doubleValue = Double(margins.right)
+        areaRightValue?.stringValue = "\(Int(margins.right))"
     }
 }
 

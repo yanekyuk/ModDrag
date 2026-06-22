@@ -94,6 +94,7 @@ If the compiler reports that it cannot write the Swift module cache, re-run the 
     - Hold the drag shortcut and move the mouse to relocate the window under the cursor
     - Hold the resize shortcut and move the mouse to resize the captured window
     - Press `Esc` to abandon the current operation
+    - Use the menu-bar **Settings…** item to tune snap preview style, tile gap, and custom top/bottom/left/right snap margins
 
 Console logs show the current state (`Idle`, `Armed`, `Dragging`, `Resize Armed`, `Resizing`) so you can confirm what the tool is doing at any moment.
 
@@ -112,14 +113,18 @@ any macOS version:
 The preview appears instantly (no tiling dwell delay) and updates live as you move
 between edges and corners. Tiles are sized to the screen's usable area — below the
 menu bar and beside the Dock — and snapping follows the cursor across multiple
-displays. This is independent of the macOS Sequoia "drag to screen edges to tile"
-setting; that setting can be left on or off.
+displays. In **Settings…**, you can add custom snap-area margins on the top,
+bottom, left, and right edges. Use these to reserve room for Stage Manager,
+desktop widgets, or any other layout you prefer; the preview flashes the usable
+snap area as you adjust the sliders. This is independent of the macOS Sequoia
+"drag to screen edges to tile" setting; that setting can be left on or off.
 
 ## Menu Bar Icon
 
 While ModDrag is running, a window icon appears in the macOS menu bar. Its presence is the quickest way to confirm the tool is active. Click it to open a menu with:
 
 -   **ModDrag — Running** — a status line confirming the tool is live
+-   **Settings…** (`⌘,`) — opens snap preview, tile gap, and custom edge-margin options
 -   **Quit ModDrag** (`⌘Q`) — cleanly stops the tool
 
 If accessibility access is missing, the icon shows a warning glyph and the menu
